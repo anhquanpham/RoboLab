@@ -77,6 +77,8 @@ def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_m
 
     if backend in ("pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05"):
         from robolab.inference.pi0_family import Pi0DroidJointposClient as PolicyClient
+    elif backend in ("pi0_jointvel", "pi0_fast_jointvel", "pi05_jointvel"):
+        from robolab.inference.pi0_jointvel import Pi0DroidJointvelClient as PolicyClient
     elif "gr00t" in backend:
         from robolab.inference.gr00t import GR00TDroidJointposClient as PolicyClient
     elif backend == "dreamzero":
@@ -89,7 +91,7 @@ def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_m
         from robolab.inference.openvla_oft import OpenVLAOFTClient as PolicyClient
     else:
         raise ValueError(
-            f"Unsupported policy '{backend}'. Choose 'pi0', 'pi0_fast', 'pi05', 'paligemma', 'paligemma_fast', 'gr00t', 'dreamzero', 'molmo', 'openvla', 'openvla_oft'"
+            f"Unsupported policy '{backend}'. Choose 'pi0', 'pi0_fast', 'pi05', 'paligemma', 'paligemma_fast', 'pi0_jointvel', 'pi0_fast_jointvel', 'pi05_jointvel', 'gr00t', 'dreamzero', 'molmo', 'openvla', 'openvla_oft'"
         )
 
     obs, _ = env.reset()
