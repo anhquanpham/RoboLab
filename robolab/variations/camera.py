@@ -8,6 +8,10 @@ from isaaclab.utils import configclass
 
 @configclass
 class OverShoulderLeftCameraCfg:
+    """Over-shoulder stereo pair + policy naming: ``external_cam`` is the primary base view (Droid
+    ``exterior_image_1_left``); ``right_cam`` is the reflected second view for 
+    stacks that expect ``observation/left_image`` and ``observation/right_image``."""
+
     external_cam = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/external_cam",
         height=720,
@@ -21,6 +25,25 @@ class OverShoulderLeftCameraCfg:
         ),
         offset=TiledCameraCfg.OffsetCfg(
             pos=(0.05, 0.57, 0.66), rot=(-0.393, -0.195, 0.399, 0.805), convention="opengl"
+        ),
+    )
+
+    # Reflected across XZ (Y negated): S R S with S = diag(1,-1,1); same intrinsics as external_cam.
+    right_cam = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/right_cam",
+        height=720,
+        width=1280,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.1,
+            focus_distance=28.0,
+            horizontal_aperture=5.376,
+            vertical_aperture=3.024,
+        ),
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.05, -0.57, 0.66),
+            rot = (0.8051207771755441, 0.39905986346961747, -0.19502925658289577, -0.3930589632670668),
+            convention="opengl",
         ),
     )
 

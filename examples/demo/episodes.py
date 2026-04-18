@@ -26,6 +26,23 @@ from robolab.core.observations.observation_utils import unpack_image_obs
 from robolab.core.utils.video_utils import VideoWriter
 
 
+def _hstack_camera_frames_rgb(
+    unpacked: dict,
+    names: tuple[str, ...],
+) -> np.ndarray | None:
+    """Resize each RGB frame to a common height and concatenate left-to-right."""
+    frames = [unpacked[n] for n in names if n in unpacked]
+    if not frames:
+        return None
+    h_min = min(f.shape[0] for f in frames)
+    resized = []
+    for f in frames:
+        ih, iw = f.shape[:2]
+        new_w = max(1, int(round(iw * h_min / ih)))
+        resized.append(cv2.resize(f, (new_w, h_min), interpolation=cv2.INTER_AREA))
+    return np.hstack(resized)
+
+
 def run_gripper_toggle_episode(env, save_videos=True, headless=False, num_steps=100, toggle_every=5):
 
     robot = env.scene["robot"]
@@ -175,9 +192,8 @@ def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_vide
     init_state_poses = {}
     video_fps = 1 / (env_cfg.sim.render_interval * env_cfg.sim.dt) # Hz
 
-    if save_videos:
-        video_path = os.path.join(get_output_dir(), f"empty_{episode}_numsteps{num_steps}.mp4")
-        video_writer = VideoWriter(video_path, fps=video_fps)
+    # Single MP4: external_cam | right_cam | wrist_cam (left-to-right), same row height.
+    video_writer = None
 
     last_frame = None
     init_state_data = None
@@ -186,11 +202,20 @@ def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_vide
         actions = sample_space(env.single_action_space, device=env.device, batch_size=num_envs)
 
         obs, _, term, trunc, info = env.step(actions)
-        frame = unpack_image_obs(obs, obs_group_name="image_obs", camera_suffix="_cam").get("external_cam")
+        unpacked = unpack_image_obs(obs, obs_group_name="image_obs")
+        preferred = ("external_cam", "right_cam", "wrist_cam")
         if save_videos:
-            video_writer.write(frame)
+            stacked = _hstack_camera_frames_rgb(unpacked, preferred)
+            if stacked is not None:
+                if video_writer is None:
+                    video_path = os.path.join(
+                        get_output_dir(),
+                        f"empty_{episode}_cameras_hstack_numsteps{num_steps}.mp4",
+                    )
+                    video_writer = VideoWriter(video_path, fps=video_fps)
+                video_writer.write(stacked)
         if save_image:
-            last_frame = frame
+            last_frame = unpacked.get("external_cam")
 
         init_state_data = extract_initial_state_info(info)
         status = extract_subtask_info(info)
@@ -203,7 +228,7 @@ def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_vide
         image_path = os.path.join(get_output_dir(), f"empty_{episode}.png")
         cv2.imwrite(image_path, cv2.cvtColor(last_frame, cv2.COLOR_RGB2BGR))
 
-    if save_videos:
+    if save_videos and video_writer is not None:
         video_writer.release()
 
     return success, subtask_status

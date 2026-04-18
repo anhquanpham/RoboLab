@@ -26,6 +26,14 @@ class ImageObsCfg(ObsGroup):
                 "normalize": False,
                 }
             )
+    right_cam = ObsTerm(
+            func=mdp.observations.image,
+            params={
+                "sensor_cfg": SceneEntityCfg("right_cam"),
+                "data_type": "rgb",
+                "normalize": False,
+                }
+            )
     wrist_cam = ObsTerm(
             func=mdp.observations.image,
             params={

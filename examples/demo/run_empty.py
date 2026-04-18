@@ -25,6 +25,9 @@ Usage:
     Run headless (no rendering):
     $ python run_empty.py --task MyTask --headless
 
+    Save one horizontal MP4 (external_cam | right_cam | wrist_cam when present):
+    $ python run_empty.py --task BananaInBowlTask --save-videos
+
 Requirements:
     - Task must be registered in the environment factory
 
@@ -52,7 +55,13 @@ parser.add_argument("--task", nargs='+', default=None,
                        help="List of tasks to evaluate on ")
 parser.add_argument("--tag", nargs='+', default=None,
                        help="List of tags of tasks to evaluate on ")
-parser.add_argument("--num-steps", type=int, default=50, help="Number of steps to run the environment for.")
+parser.add_argument("--num-steps", type=int, default=10, help="Number of steps to run the environment for.")
+parser.add_argument(
+    "--save-videos",
+    "--save_videos",
+    action="store_true",
+    help="Save one MP4 with cameras tiled left-to-right (external_cam, right_cam, wrist_cam when present).",
+)
 
 # parse the arguments
 args_cli, _= parser.parse_known_args()
@@ -119,7 +128,7 @@ def main():
                 num_steps=args_cli.num_steps,
                 episode=i,
                 save_image=False,
-                save_videos=False)
+                save_videos=args_cli.save_videos)
 
             end_episode(env)
 
