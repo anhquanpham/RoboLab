@@ -1,12 +1,25 @@
 import io
+import os
 from typing import Any
 
 import msgpack
 import numpy as np
 import zmq
 from PIL import Image
+from scipy.spatial.transform import Rotation as ScipyRotation
 
 from .base_client import InferenceClient
+
+# OXE DROID (Isaac GR00T N1.7): extrinsic euler frame correction — matches NVIDIA training (see Isaac-GR00T examples/DROID/main_gr00t.py).
+DROID_EEF_ROTATION_CORRECT = np.array(
+    [[0, 0, -1], [-1, 0, 0], [0, 1, 0]],
+    dtype=np.float64,
+)
+
+# Video temporal length must match the **checkpoint processor** (``video.delta_indices``).
+# ``nvidia/GR00T-N1.7-DROID`` uses horizon 1; some configs use 2 — set via env if needed.
+def _video_temporal_size() -> int:
+    return int(np.clip(int(os.environ.get("GR00T_VIDEO_T", "1")), 1, 32))
 
 # GR00T policy resolution
 RESOLUTION = (180, 320)
@@ -39,6 +52,70 @@ def quat_to_euler_xyz(quat: np.ndarray) -> np.ndarray:
     yaw = np.arctan2(siny_cosp, cosy_cosp)
     
     return np.stack([roll, pitch, yaw], axis=-1)
+
+
+def compute_eef_9d_xyz_euler_xyz(xyz: np.ndarray, euler_xyz: np.ndarray) -> np.ndarray:
+    """Map (xyz + extrinsic XYZ euler) to 9D EEF state (xyz + rot6d) for OXE DROID checkpoints."""
+    c = np.concatenate(
+        [np.asarray(xyz, dtype=np.float64).reshape(3), np.asarray(euler_xyz, dtype=np.float64).reshape(3)]
+    )
+    rot_robot = ScipyRotation.from_euler("XYZ", c[3:6]).as_matrix()
+    rot_mat = rot_robot @ DROID_EEF_ROTATION_CORRECT
+    rot6d = rot_mat[:2, :].reshape(6)
+    return np.concatenate([c[:3], rot6d]).astype(np.float32)
+
+
+def _batched_video_bt_hwc(img_hwc_uint8: np.ndarray, temporal_size: int | None = None) -> np.ndarray:
+    """(H,W,C) -> (1, T, H, W, C) uint8. Repeat the current frame along T when T>1 and history is unavailable."""
+    t = temporal_size if temporal_size is not None else _video_temporal_size()
+    if t == 1:
+        return img_hwc_uint8[np.newaxis, np.newaxis, ...].astype(np.uint8)
+    stacked = np.stack([img_hwc_uint8] * t, axis=0)
+    return stacked[np.newaxis, ...].astype(np.uint8)
+
+
+def _build_gr00t_n17_oxe_droid_observation(curr_obs: dict, instruction: str) -> dict[str, Any]:
+    """Nested observation for Isaac GR00T N1.7 ``Gr00tPolicy`` (no SimPolicyWrapper)."""
+    ext_image = resize_with_pad(curr_obs["external_image"], RESOLUTION[0], RESOLUTION[1])
+    wrist_image = resize_with_pad(curr_obs["wrist_image"], RESOLUTION[0], RESOLUTION[1])
+
+    eef_9d = compute_eef_9d_xyz_euler_xyz(curr_obs["eef_position"], curr_obs["eef_euler"])
+    jp = curr_obs["joint_position"].astype(np.float32)
+    gp = curr_obs["gripper_position"].astype(np.float32)
+    if jp.ndim == 1:
+        jp = jp.reshape(7)
+    if gp.ndim == 0:
+        gp = np.array([gp], dtype=np.float32)
+    gp = gp.reshape(1)
+
+    return {
+        "video": {
+            "exterior_image_1_left": _batched_video_bt_hwc(ext_image),
+            "wrist_image_left": _batched_video_bt_hwc(wrist_image),
+        },
+        "state": {
+            "eef_9d": eef_9d.reshape(1, 1, 9).astype(np.float32),
+            "gripper_position": gp.reshape(1, 1, 1).astype(np.float32),
+            "joint_position": jp.reshape(1, 1, 7).astype(np.float32),
+        },
+        "language": {
+            "annotation.language.language_instruction": [[instruction]],
+        },
+    }
+
+
+def _joint_gripper_from_action_dict(action_dict: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    """Support N1.7 nested keys or flat ``action.*`` keys (SimPolicyWrapper)."""
+    jk = "joint_position" if "joint_position" in action_dict else "action.joint_position"
+    gk = "gripper_position" if "gripper_position" in action_dict else "action.gripper_position"
+    ja = np.asarray(action_dict[jk], dtype=np.float32)
+    ga = np.asarray(action_dict[gk], dtype=np.float32)
+    # (B, T, D) -> batch 0
+    if ja.ndim == 3:
+        ja = ja[0]
+    if ga.ndim == 3:
+        ga = ga[0]
+    return ja, ga
 
 
 # ==============================================================================
@@ -163,7 +240,13 @@ def _resize_with_pad_pil(image: Image.Image, height: int, width: int, method: in
 # ==============================================================================
 
 class GR00TDroidJointposClient(InferenceClient):
-    """Inference client for GR00T policy on DROID with joint position action space."""
+    """Inference client for Isaac GR00T N1.7 + OXE DROID checkpoints (``Gr00tPolicy`` over ZMQ).
+
+    Sends **nested** observations expected by ``Gr00tPolicy.check_observation`` (video/state/language
+    dicts). For the legacy flat protocol + ``Gr00tSimPolicyWrapper`` server, start the server with
+    ``--use-sim-policy-wrapper`` and use an older RoboLab revision or a thin adapter — this client
+    targets the default N1.7 ``run_gr00t_server.py`` without that flag.
+    """
 
     def __init__(
         self,
@@ -216,31 +299,15 @@ class GR00TDroidJointposClient(InferenceClient):
         ):
             self.actions_from_chunk_completed = 0
 
-            # Resize images to the resolution expected by GR00T
-            ext_image = resize_with_pad(curr_obs["external_image"], RESOLUTION[0], RESOLUTION[1])
-            wrist_image = resize_with_pad(curr_obs["wrist_image"], RESOLUTION[0], RESOLUTION[1])
-
-            # Prepare request data in GR00T format
-            # GR00T expects: [B, T, H, W, C] for video, [B, T, D] for state
-            request_data = {
-                "video.exterior_image_1_left": ext_image[None, None, ...],  # [1, 1, H, W, C]
-                "video.wrist_image_left": wrist_image[None, None, ...],  # [1, 1, H, W, C]
-                "state.eef_position": curr_obs["eef_position"][None, None, ...],  # [1, 1, 3]
-                "state.eef_rotation": curr_obs["eef_euler"][None, None, ...],  # [1, 1, 3]
-                "state.joint_position": curr_obs["joint_position"][None, None, ...].astype(np.float32),
-                "state.gripper_position": curr_obs["gripper_position"][None, None, ...].astype(np.float32),
-                "annotation.language.language_instruction": [instruction],
-                "annotation.language.language_instruction_2": [instruction],
-                "annotation.language.language_instruction_3": [instruction],
-            }
+            # Isaac GR00T N1.7 ``Gr00tPolicy``: nested observation (not flat ``video.*`` keys).
+            request_data = _build_gr00t_n17_oxe_droid_observation(curr_obs, instruction)
 
             # Get action from policy server
             response = self.client.get_action(request_data)
-            # Response: (action_dict, info_dict)
+            # Response: (action_dict, info_dict); keys are ``joint_position`` / ``gripper_position`` or ``action.*`` if wrapped
             action_dict = response[0]
-            joint_action = action_dict["action.joint_position"][0]  # [N, 7]
-            gripper_action = action_dict["action.gripper_position"][0]  # [N, 1]
-            self.pred_action_chunk = np.concatenate([joint_action, gripper_action], axis=1)  # [N, 8]
+            joint_action, gripper_action = _joint_gripper_from_action_dict(action_dict)
+            self.pred_action_chunk = np.concatenate([joint_action, gripper_action], axis=1)  # [T, 8]
 
         # Select current action from chunk
         action = self.pred_action_chunk[self.actions_from_chunk_completed]

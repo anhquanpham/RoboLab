@@ -4,6 +4,7 @@
 from typing import Any, List
 
 import isaaclab.envs.mdp as mdp
+import cv2
 import numpy as np
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -120,6 +121,27 @@ def generate_obs_cfg(obs_groups: dict[str, ObsGroup]):
         setattr(DynamicObservationCfg, group_name, obs_group)
 
     return DynamicObservationCfg
+
+
+def hstack_camera_frames_rgb(
+    unpacked: dict,
+    names: tuple[str, ...],
+) -> np.ndarray | None:
+    """Resize each RGB frame to a common height and concatenate left-to-right.
+
+    Used for policy eval and run_empty-style videos (e.g. external | right | wrist).
+    """
+    frames = [unpacked[n] for n in names if n in unpacked]
+    if not frames:
+        return None
+    h_min = min(f.shape[0] for f in frames)
+    resized = []
+    for f in frames:
+        ih, iw = f.shape[:2]
+        new_w = max(1, int(round(iw * h_min / ih)))
+        resized.append(cv2.resize(f, (new_w, h_min), interpolation=cv2.INTER_AREA))
+    return np.hstack(resized)
+
 
 def unpack_image_obs(obs, obs_group_name="image_obs", camera_suffix=["_camera", "_cam", "_img", "_image"], scale: float = 1.0, env_id: int = 0):
     """

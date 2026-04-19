@@ -6,7 +6,7 @@
 This module contains the run_episode function that executes policy-controlled
 episodes using various policy backends (pi0, gr00t, dreamzero, molmo, openvla, etc.).
 
-Supports multi-env: one PolicyClient per env, per-env video writers,
+Supports multi-env: one PolicyClient per env, optional per-env MP4 (3-cam hstack),
 actions inferred per active env and stacked for env.step().
 """
 
@@ -47,12 +47,16 @@ class TimingStats:
 
 from robolab.constants import VISUALIZE, get_output_dir
 from robolab.core.logging.results import get_all_env_subtask_infos
-from robolab.core.observations.observation_utils import unpack_image_obs, unpack_viewport_cams
+from robolab.core.observations.observation_utils import hstack_camera_frames_rgb, unpack_image_obs
 from robolab.core.utils.video_utils import VideoWriter
 from robolab.core.world.world_state import get_world
 
+# Same layout as examples/demo/episodes.py run_empty_episode (external | right | wrist).
+POLICY_VIDEO_CAM_ORDER = ("external_cam", "right_cam", "wrist_cam")
+_VIDEO_MODES_SAVE_STACK = frozenset({"hstack", "all", "sensor", "viewport"})
 
-def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_mode="all", remote_host="localhost", remote_port="8000"):
+
+def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_mode="hstack", remote_host="localhost", remote_port="8000"):
     """Run a policy-controlled episode across all parallel envs.
 
     Args:
@@ -61,7 +65,10 @@ def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_m
         episode: Run index (each run produces num_envs episodes)
         headless: If True, don't display video
         save_videos: If True, save per-env episode videos
-        video_mode: Which videos to save: 'all', 'viewport', 'sensor', or 'none'
+        video_mode: 'none' disables video. Otherwise saves one MP4 per env: external_cam |
+            right_cam | wrist_cam stacked horizontally (same as run_empty). Values
+            'hstack', 'all', 'sensor', and 'viewport' are treated as this layout
+            (legacy names kept for CLI compatibility).
         remote_host: Host for policy server
         remote_port: Port for policy server
 
@@ -113,21 +120,10 @@ def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_m
         for env_id in range(env.num_envs):
             env.recorder_manager.set_episode_index(env_id, env_ids=[env_id])
 
-    # Setup per-env streaming video writers
-    save_sensor = save_videos and video_mode in ("all", "sensor")
-    save_viewport = save_videos and video_mode in ("all", "viewport")
+    # Per-env writers: one horizontal 3-cam strip per env (lazy-init on first valid frame)
+    save_stack = save_videos and video_mode in _VIDEO_MODES_SAVE_STACK
     cleaned_instruction = re.sub(r'[^\w\s]', '', instruction).replace(' ', '_')
-    if save_videos:
-        video_writers_obs = []
-        video_writers_viewport = []
-        for env_id in range(env.num_envs):
-            suffix = f"_{episode}_env{env_id}" if env.num_envs > 1 else f"_{episode}"
-            if save_sensor:
-                video_path = os.path.join(get_output_dir(), f"{cleaned_instruction}{suffix}.mp4")
-                video_writers_obs.append(VideoWriter(video_path, video_fps))
-            if save_viewport:
-                video_path_viewport = os.path.join(get_output_dir(), f"{cleaned_instruction}{suffix}_viewport.mp4")
-                video_writers_viewport.append(VideoWriter(video_path_viewport, video_fps))
+    video_writers: list[VideoWriter | None] = [None] * env.num_envs if save_stack else []
 
     import omni.kit.app
     import omni.timeline
@@ -166,18 +162,21 @@ def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_m
         per_env_infos = get_all_env_subtask_infos(env)
         subtask_status.append(per_env_infos)
 
-        # Write per-env video frames (skip frozen envs)
-        if save_videos:
+        # One MP4 per env: external | right | wrist (same as run_empty_episode)
+        if save_stack:
             timer.start("video_write")
             for env_id in range(env.num_envs):
                 if env._frozen_envs[env_id]:
                     continue
-                if save_sensor:
-                    frame_obs = unpack_image_obs(obs, scale=0.5, env_id=env_id).get("combined_image")
-                    video_writers_obs[env_id].write(frame_obs)
-                if save_viewport:
-                    frame_vp = unpack_viewport_cams(obs, env_id=env_id).get("combined_image")
-                    video_writers_viewport[env_id].write(frame_vp)
+                unpacked = unpack_image_obs(obs, scale=0.5, env_id=env_id)
+                stacked = hstack_camera_frames_rgb(unpacked, POLICY_VIDEO_CAM_ORDER)
+                if stacked is None:
+                    continue
+                if video_writers[env_id] is None:
+                    suffix = f"_{episode}_env{env_id}" if env.num_envs > 1 else f"_{episode}"
+                    video_path = os.path.join(get_output_dir(), f"{cleaned_instruction}{suffix}.mp4")
+                    video_writers[env_id] = VideoWriter(video_path, video_fps)
+                video_writers[env_id].write(stacked)
             timer.stop("video_write")
 
         actual_steps += 1
@@ -186,9 +185,10 @@ def run_episode(env, env_cfg, episode, headless=False, save_videos=True, video_m
         if env.all_terminated:
             break
 
-    if save_videos:
-        for vw in video_writers_obs + video_writers_viewport:
-            vw.release()
+    if save_stack:
+        for vw in video_writers:
+            if vw is not None:
+                vw.release()
 
     client.reset()
 

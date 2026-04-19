@@ -73,9 +73,10 @@ parser.add_argument("--remote-port", "--remote_port", type=int, default=8000,
                        help="Remote port for policy server (default: 8000)")
 parser.add_argument("--instruction-type", "--instruction_type", type=str, default="default",
                        help="Which instruction variant to use when a task defines multiple (default, vague, specific, etc.)")
-parser.add_argument("--video-mode", "--video_mode", type=str, default="all",
-                    choices=["all", "viewport", "sensor", "none"],
-                    help="Which videos to save: 'all' (sensor + viewport), 'viewport' only, 'sensor' only, or 'none' (default: all)")
+parser.add_argument("--video-mode", "--video_mode", type=str, default="hstack",
+                    choices=["hstack", "none", "all", "sensor", "viewport"],
+                    help="Video export: one MP4 per env with external|right|wrist cams tiled ('hstack'). "
+                         "Legacy 'all', 'sensor', and 'viewport' use the same layout. 'none' disables video.")
 # parse the arguments
 args_cli, _= parser.parse_known_args()
 args_cli.enable_cameras = True

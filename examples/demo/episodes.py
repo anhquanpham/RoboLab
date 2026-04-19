@@ -22,25 +22,8 @@ from tqdm import tqdm
 
 from robolab.constants import PACKAGE_DIR, get_output_dir
 from robolab.core.logging.results import extract_initial_state_info, extract_subtask_info
-from robolab.core.observations.observation_utils import unpack_image_obs
+from robolab.core.observations.observation_utils import hstack_camera_frames_rgb, unpack_image_obs
 from robolab.core.utils.video_utils import VideoWriter
-
-
-def _hstack_camera_frames_rgb(
-    unpacked: dict,
-    names: tuple[str, ...],
-) -> np.ndarray | None:
-    """Resize each RGB frame to a common height and concatenate left-to-right."""
-    frames = [unpacked[n] for n in names if n in unpacked]
-    if not frames:
-        return None
-    h_min = min(f.shape[0] for f in frames)
-    resized = []
-    for f in frames:
-        ih, iw = f.shape[:2]
-        new_w = max(1, int(round(iw * h_min / ih)))
-        resized.append(cv2.resize(f, (new_w, h_min), interpolation=cv2.INTER_AREA))
-    return np.hstack(resized)
 
 
 def run_gripper_toggle_episode(env, save_videos=True, headless=False, num_steps=100, toggle_every=5):
@@ -205,7 +188,7 @@ def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_vide
         unpacked = unpack_image_obs(obs, obs_group_name="image_obs")
         preferred = ("external_cam", "right_cam", "wrist_cam")
         if save_videos:
-            stacked = _hstack_camera_frames_rgb(unpacked, preferred)
+            stacked = hstack_camera_frames_rgb(unpacked, preferred)
             if stacked is not None:
                 if video_writer is None:
                     video_path = os.path.join(
